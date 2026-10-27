@@ -3,7 +3,10 @@
  * Student ID: 251ADB002
  * Repository: https://github.com/praphull137/calc-lab-home
  * Compile: gcc -O2 -Wall -Wextra -std=c17 -o calc calc.c -lm
- * AI assistance: OpenAI ChatGPT was used to help write, review,
+ *
+ * AI (ChatGPT): I used ChatGPT to discuss recursive-descent parsing,
+ * operator precedence, error positions, numeric handling, and file I/O.
+ * Conversation history: https://chatgpt.com/share/6ae12e1b-fe80-83eb-87b7-2798938006bb
  */
 
 #include <stdio.h>
@@ -29,8 +32,10 @@ static size_t pos, offset, errpos;
 static int failed;
 
 /*
- * Keep the first error only. The file offset lets us report its
- * position in the complete input, not just the current line.
+ * Keep the first error so a later parser failure cannot hide the
+ * original cause. Adding offset converts this line's position into
+ * a position in the complete input file.
+ * AI prompt summary: "How can I track error positions in a C parser?"
  */
 static void error_at(size_t p)
 {
@@ -40,7 +45,10 @@ static void error_at(size_t p)
     }
 }
 
-/* Skip whitespace allowed between parts of an expression. */
+/*
+ * Ignore only the whitespace accepted by this grammar. Keeping this
+ * in one helper means every parser level treats spacing consistently.
+ */
 static void spaces(void)
 {
     while (src[pos] == ' ' || src[pos] == '\t' ||
@@ -51,8 +59,10 @@ static void spaces(void)
 static int expr(Value *v);
 
 /*
- * Parse a number or a parenthesized expression. Parentheses allow
- * an expression to be evaluated as a single value.
+ * Parentheses let a full expression act like one primary value, so
+ * grouping can override the usual operator precedence. Number parsing
+ * also validates the token before converting it to a numeric value.
+ * AI prompt summary: "How should I parse numbers and parentheses?"
  */
 static int primary(Value *v)
 {
@@ -91,7 +101,10 @@ static int primary(Value *v)
     if (src[i] == '.') {
         size_t dot = i++;
 
-        /* A decimal point must have at least one digit on each side. */
+        /*
+         * Require digits on both sides of the decimal point so forms
+         * such as .5 and 5. are rejected by this assignment's grammar.
+         */
         if (!isdigit((unsigned char)src[i])) {
             error_at(dot);
             return 0;
@@ -136,8 +149,10 @@ static int primary(Value *v)
 }
 
 /*
- * Exponentiation is right-associative. Parsing the exponent with
- * power() makes 2 ** 3 ** 2 equivalent to 2 ** (3 ** 2).
+ * Exponentiation is right-associative, so the exponent is parsed by
+ * power() again. This groups 2 ** 3 ** 2 as 2 ** (3 ** 2), matching
+ * the intended grammar instead of evaluating the left pair first.
+ * AI prompt summary: "Why does recursive power parsing make ** right-associative?"
  */
 static int power(Value *v)
 {
@@ -190,8 +205,11 @@ static int power(Value *v)
 }
 
 /*
- * Handle multiplication and division after parsing powers.
- * This gives exponentiation higher precedence than these operators.
+ * Each operand is parsed as a power before * or / is applied. Keeping
+ * this level below power() and above expr() makes exponentiation bind
+ * more tightly than multiplication/division, which bind more tightly
+ * than addition/subtraction.
+ * AI prompt summary: "How do parser functions enforce operator precedence?"
  */
 static int term(Value *v)
 {
@@ -205,7 +223,10 @@ static int term(Value *v)
         if (op != '*' && op != '/')
             return 1;
 
-        /* Leave ** for power(); a single * means multiplication. */
+        /*
+         * Do not consume the first character of ** here: power() owns
+         * exponentiation, while a lone * is multiplication.
+         */
         if (op == '*' && src[pos + 1] == '*')
             return 1;
 
@@ -251,9 +272,9 @@ static int term(Value *v)
 }
 
 /*
- * Parse addition and subtraction after each term has handled
- * multiplication, division, and exponentiation. These operators
- * are evaluated from left to right.
+ * Parse a whole term before applying + or -, so multiplication,
+ * division, and exponentiation are handled first. The loop then
+ * applies addition/subtraction from left to right.
  */
 static int expr(Value *v)
 {
@@ -293,9 +314,10 @@ static int expr(Value *v)
 }
 
 /*
- * Start at the beginning of each expression while keeping its
- * original file offset for accurate error positions. Reject any
- * unexpected characters left after parsing.
+ * Reset the parser for each line but retain that line's absolute file
+ * offset, allowing errors to use whole-file positions. After parsing,
+ * reject leftover characters instead of silently accepting bad input.
+ * AI prompt summary: "How can I report positions across multiple lines?"
  */
 static int evaluate(const char *line, size_t line_offset, Value *v)
 {
@@ -318,9 +340,11 @@ static int evaluate(const char *line, size_t line_offset, Value *v)
 }
 
 /*
- * Save results temporarily so an error later in the input cannot
- * leave partial answers in the final output. Copy the saved results
- * only if every expression is valid.
+ * Write results to a temporary stream first. If a later expression is
+ * invalid, the program can print one error without leaving earlier
+ * answers in the final output; valid results are copied only after
+ * the input has been checked successfully.
+ * AI prompt summary: "How can I avoid partial output when parsing fails?"
  */
 static int process_stream(FILE *in, FILE *out)
 {
@@ -343,7 +367,10 @@ static int process_stream(FILE *in, FILE *out)
                 line[first] == '\r'))
             first++;
 
-        /* Blank lines and lines starting with # are skipped. */
+        /*
+         * Ignore blank lines and full-line comments so they do not
+         * produce output or affect expression evaluation.
+         */
         if (first == len || line[first] == '\n' ||
             line[first] == '#') {
             total += len;
@@ -387,7 +414,7 @@ static int process_stream(FILE *in, FILE *out)
             return 0;
         }
     } else {
-        /* Publish the saved results only after the full input is valid. */
+        /* Publish saved answers only after every expression has passed validation. */
         if (fflush(temp) != 0 || fseek(temp, 0, SEEK_SET) != 0) {
             fclose(temp);
             return 0;
@@ -412,14 +439,20 @@ static int process_stream(FILE *in, FILE *out)
     return !ferror(out);
 }
 
-/* Return the filename without its directory path. */
+/*
+ * Use only the final path component when building output names, so
+ * input directories are not accidentally copied into the filename.
+ */
 static const char *basename_of(const char *path)
 {
     const char *p = strrchr(path, '/');
     return p ? p + 1 : path;
 }
 
-/* Remove the final extension before building the output filename. */
+/*
+ * Remove the last extension so the generated output name uses the
+ * input's base name rather than ending up with two extensions.
+ */
 static void remove_extension(char *s)
 {
     char *p = strrchr(s, '.');
@@ -428,7 +461,10 @@ static void remove_extension(char *s)
         *p = '\0';
 }
 
-/* Create the directory if needed, or accept it if it already exists. */
+/*
+ * Allow an existing directory as well as a newly created one, but
+ * reject a path that exists as a non-directory or cannot be created.
+ */
 static int ensure_dir(const char *path)
 {
     if (mkdir(path, 0777) == 0)
@@ -439,8 +475,10 @@ static int ensure_dir(const char *path)
 }
 
 /*
- * Open the input and create its output file using the required name.
- * Report failure if either file operation cannot be completed.
+ * Build the required output filename from the input's base name, then
+ * check each open/close operation so filesystem errors are not mistaken
+ * for successful processing.
+ * AI prompt summary: "How should a C program handle input and output files?"
  */
 static int process_file(const char *path, const char *outdir)
 {
@@ -486,8 +524,9 @@ static int process_file(const char *path, const char *outdir)
 }
 
 /*
- * Process regular .txt files directly inside the chosen directory.
- * Subdirectories are intentionally skipped.
+ * Process only regular .txt files in this directory. Skipping folders
+ * avoids unintentionally recursing into unrelated or generated output
+ * directories.
  */
 static int process_directory(const char *path, const char *outdir)
 {
@@ -538,8 +577,10 @@ static void usage(const char *program)
 }
 
 /*
- * Parse the command-line options, choose the output directory,
- * and process either one input file or matching files in a directory.
+ * Validate the command-line choices before opening files. Requiring
+ * either one input file or one directory keeps the two processing
+ * modes unambiguous and gives invalid options a clear usage message.
+ * AI prompt summary: "How should I validate file and directory options?"
  */
 int main(int argc, char **argv)
 {
