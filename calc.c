@@ -1,11 +1,9 @@
-
 /*
  * Name: Praphull Kumar Pandey
  * Student ID: 251ADB002
  * Repository: https://github.com/praphull137/calc-lab-home
  * Compile: gcc -O2 -Wall -Wextra -std=c17 -o calc calc.c -lm
- * Resources used: OpenAI ChatGPT. I used ChatGPT to help write,
- * review, debug, and fix errors in the code.
+ * AI assistance: OpenAI ChatGPT was used to help write, review,
  */
 
 #include <stdio.h>
@@ -31,9 +29,8 @@ static size_t pos, offset, errpos;
 static int failed;
 
 /*
- * I save the first error and ignore later ones because the output
- * should show only the first mistake. The offset helps me find its
- * position in the whole file, not just in the current line.
+ * Keep the first error only. The file offset lets us report its
+ * position in the complete input, not just the current line.
  */
 static void error_at(size_t p)
 {
@@ -43,7 +40,7 @@ static void error_at(size_t p)
     }
 }
 
-/* Ignore spaces and tabs between parts of an expression. */
+/* Skip whitespace allowed between parts of an expression. */
 static void spaces(void)
 {
     while (src[pos] == ' ' || src[pos] == '\t' ||
@@ -54,9 +51,8 @@ static void spaces(void)
 static int expr(Value *v);
 
 /*
- * A value can be a number or an expression inside parentheses.
- * If there is an opening parenthesis, I evaluate what is inside
- * and then check that the closing parenthesis is there too.
+ * Parse a number or a parenthesized expression. Parentheses allow
+ * an expression to be evaluated as a single value.
  */
 static int primary(Value *v)
 {
@@ -95,7 +91,7 @@ static int primary(Value *v)
     if (src[i] == '.') {
         size_t dot = i++;
 
-        /* A decimal number needs digits after the dot as well. */
+        /* A decimal point must have at least one digit on each side. */
         if (!isdigit((unsigned char)src[i])) {
             error_at(dot);
             return 0;
@@ -140,8 +136,8 @@ static int primary(Value *v)
 }
 
 /*
- * I call power() again to read the exponent. This makes
- * 2 ** 3 ** 2 work as 2 ** (3 ** 2), from right to left.
+ * Exponentiation is right-associative. Parsing the exponent with
+ * power() makes 2 ** 3 ** 2 equivalent to 2 ** (3 ** 2).
  */
 static int power(Value *v)
 {
@@ -161,13 +157,13 @@ static int power(Value *v)
         if (!power(&rhs))
             return 0;
 
-        /* The assignment does not allow negative exponents. */
+        /* Negative exponents are not allowed by the assignment. */
         if (rhs.n < 0) {
             error_at(rhs_start);
             return 0;
         }
 
-        /* A negative base with a fractional exponent is not real here. */
+        /* Fractional powers of negative numbers are not real-valued here. */
         if (v->n < 0 && rhs.n != floorl(rhs.n)) {
             error_at(op);
             return 0;
@@ -194,8 +190,8 @@ static int power(Value *v)
 }
 
 /*
- * Multiplication and division are handled before addition and
- * subtraction. I use power() here so exponentiation is handled first.
+ * Handle multiplication and division after parsing powers.
+ * This gives exponentiation higher precedence than these operators.
  */
 static int term(Value *v)
 {
@@ -209,7 +205,7 @@ static int term(Value *v)
         if (op != '*' && op != '/')
             return 1;
 
-        /* Two stars together mean exponentiation, not multiplication. */
+        /* Leave ** for power(); a single * means multiplication. */
         if (op == '*' && src[pos + 1] == '*')
             return 1;
 
@@ -234,8 +230,8 @@ static int term(Value *v)
             }
 
             /*
-             * If either value is a decimal, I keep the fractional
-             * part. Otherwise, division truncates toward zero.
+             * Keep fractional results if either operand is floating-point.
+             * Otherwise, truncate the quotient toward zero.
              */
             n = floating ? v->n / rhs.n
                          : truncl(v->n / rhs.n);
@@ -255,9 +251,9 @@ static int term(Value *v)
 }
 
 /*
- * By the time we get here, multiplication, division and powers
- * have already been handled. Addition and subtraction are then
- * evaluated from left to right.
+ * Parse addition and subtraction after each term has handled
+ * multiplication, division, and exponentiation. These operators
+ * are evaluated from left to right.
  */
 static int expr(Value *v)
 {
@@ -297,9 +293,9 @@ static int expr(Value *v)
 }
 
 /*
- * I reset the character position for every expression but keep
- * the file offset. This lets errors point to the right character
- * in the original file. Any leftover character makes it invalid.
+ * Start at the beginning of each expression while keeping its
+ * original file offset for accurate error positions. Reject any
+ * unexpected characters left after parsing.
  */
 static int evaluate(const char *line, size_t line_offset, Value *v)
 {
@@ -322,9 +318,9 @@ static int evaluate(const char *line, size_t line_offset, Value *v)
 }
 
 /*
- * I write results to a temporary file first. If a later expression
- * is wrong, I can discard the earlier results and output only the
- * first error, instead of leaving partial answers in the output.
+ * Save results temporarily so an error later in the input cannot
+ * leave partial answers in the final output. Copy the saved results
+ * only if every expression is valid.
  */
 static int process_stream(FILE *in, FILE *out)
 {
@@ -391,7 +387,7 @@ static int process_stream(FILE *in, FILE *out)
             return 0;
         }
     } else {
-        /* Copy the saved answers only after every expression succeeds. */
+        /* Publish the saved results only after the full input is valid. */
         if (fflush(temp) != 0 || fseek(temp, 0, SEEK_SET) != 0) {
             fclose(temp);
             return 0;
@@ -416,14 +412,14 @@ static int process_stream(FILE *in, FILE *out)
     return !ferror(out);
 }
 
-/* Get the filename without the folders before it. */
+/* Return the filename without its directory path. */
 static const char *basename_of(const char *path)
 {
     const char *p = strrchr(path, '/');
     return p ? p + 1 : path;
 }
 
-/* Remove the extension before building the output filename. */
+/* Remove the final extension before building the output filename. */
 static void remove_extension(char *s)
 {
     char *p = strrchr(s, '.');
@@ -432,7 +428,7 @@ static void remove_extension(char *s)
         *p = '\0';
 }
 
-/* Use the directory if it already exists; otherwise, create it. */
+/* Create the directory if needed, or accept it if it already exists. */
 static int ensure_dir(const char *path)
 {
     if (mkdir(path, 0777) == 0)
@@ -443,9 +439,8 @@ static int ensure_dir(const char *path)
 }
 
 /*
- * I open the input and create its output file using the required
- * naming format. If either file operation fails, the run is reported
- * as unsuccessful instead of silently continuing.
+ * Open the input and create its output file using the required name.
+ * Report failure if either file operation cannot be completed.
  */
 static int process_file(const char *path, const char *outdir)
 {
@@ -491,8 +486,8 @@ static int process_file(const char *path, const char *outdir)
 }
 
 /*
- * I only process .txt files directly inside the chosen folder.
- * Checking for regular files means that subfolders are skipped.
+ * Process regular .txt files directly inside the chosen directory.
+ * Subdirectories are intentionally skipped.
  */
 static int process_directory(const char *path, const char *outdir)
 {
@@ -543,9 +538,8 @@ static void usage(const char *program)
 }
 
 /*
- * I read the command-line options first, then choose the output
- * directory. After checking the arguments, I process either one
- * input file or all matching files in a directory.
+ * Parse the command-line options, choose the output directory,
+ * and process either one input file or matching files in a directory.
  */
 int main(int argc, char **argv)
 {
