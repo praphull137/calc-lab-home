@@ -4,7 +4,9 @@
  * Student ID: 251ADB002
  * Repository: https://github.com/praphull137/calc-lab-home
  * Compile: gcc -O2 -Wall -Wextra -std=c17 -o calc calc.c -lm
- * Resources used: OpenAI ChatGPT.
+ * Resources used: OpenAI ChatGPT. Assistance: parser review and
+ * output buffering optimization. Retain the relevant conversation
+ * history as required by the assignment.
  */
 
 #include <stdio.h>
@@ -46,16 +48,19 @@ static void spaces(void)
 
 static int expr(Value *v);
 
+/* Numbers and parenthesized expressions are the grammar's basic units. */
 static int primary(Value *v)
 {
     spaces();
 
     if (src[pos] == '(') {
         size_t open = pos++;
+
         if (!expr(v))
             return 0;
 
         spaces();
+
         if (src[pos] != ')') {
             error_at(pos > open ? pos : open);
             return 0;
@@ -80,6 +85,7 @@ static int primary(Value *v)
 
     if (src[i] == '.') {
         size_t dot = i++;
+
         if (!isdigit((unsigned char)src[i])) {
             error_at(dot);
             return 0;
@@ -119,10 +125,14 @@ static int primary(Value *v)
     v->n = n;
     v->floating = strchr(buf, '.') != NULL;
     pos = i;
+
     return 1;
 }
 
-/* Recursive exponent parsing makes ** right-associative. */
+/*
+ * power() calls itself for the exponent, so 2 ** 3 ** 2 becomes
+ * 2 ** (3 ** 2), not (2 ** 3) ** 2.
+ */
 static int power(Value *v)
 {
     if (!primary(v))
@@ -134,9 +144,10 @@ static int power(Value *v)
         size_t op = pos;
         pos += 2;
         spaces();
-        size_t rhs_start = pos;
 
+        size_t rhs_start = pos;
         Value rhs;
+
         if (!power(&rhs))
             return 0;
 
@@ -170,6 +181,7 @@ static int power(Value *v)
     return 1;
 }
 
+/* Multiplication and division have higher precedence than + and -. */
 static int term(Value *v)
 {
     if (!power(v))
@@ -181,14 +193,16 @@ static int term(Value *v)
 
         if (op != '*' && op != '/')
             return 1;
+
         if (op == '*' && src[pos + 1] == '*')
             return 1;
 
         size_t at = pos++;
         spaces();
-        size_t rhs_start = pos;
 
+        size_t rhs_start = pos;
         Value rhs;
+
         if (!power(&rhs))
             return 0;
 
@@ -238,8 +252,10 @@ static int expr(Value *v)
         if (!term(&rhs))
             return 0;
 
-        long double n = op == '+' ?
-                        v->n + rhs.n : v->n - rhs.n;
+        long double n = op == '+'
+                      ? v->n + rhs.n
+                      : v->n - rhs.n;
+
         int floating = v->floating || rhs.floating;
 
         if (!isfinite(n) ||
@@ -275,12 +291,20 @@ static int evaluate(const char *line, size_t line_offset, Value *v)
     return 1;
 }
 
-/* Keep results buffered so an error discards earlier results. */
+/*
+ * Results go to a temporary file first. If a later expression fails,
+ * earlier results are discarded and only ERROR:<position> is written.
+ * This avoids keeping the whole output in a growing RAM buffer.
+ */
 static int process_stream(FILE *in, FILE *out)
 {
     char line[CAP];
-    char *results = NULL;
-    size_t used = 0, capacity = 0, total = 0;
+    FILE *temp = tmpfile();
+
+    if (!temp)
+        return 0;
+
+    size_t total = 0;
     size_t first_error = 0;
     int has_error = 0;
 
@@ -307,56 +331,56 @@ static int process_stream(FILE *in, FILE *out)
             break;
         }
 
-        char result[128];
         int n;
 
         if (!v.floating &&
             v.n >= (long double)LLONG_MIN &&
-            v.n <= (long double)LLONG_MAX)
-            n = snprintf(result, sizeof result, "%.0Lf\n", v.n);
-        else
-            n = snprintf(result, sizeof result, "%.15Lg\n", v.n);
-
-        if (n < 0 || (size_t)n >= sizeof result) {
-            has_error = 1;
-            first_error = total + len + 1;
-            break;
+            v.n <= (long double)LLONG_MAX) {
+            n = fprintf(temp, "%.0Lf\n", v.n);
+        } else {
+            n = fprintf(temp, "%.15Lg\n", v.n);
         }
 
-        size_t need = used + (size_t)n + 1;
-
-        if (need > capacity) {
-            size_t newcap = capacity ? capacity * 2 : 256;
-            while (newcap < need)
-                newcap *= 2;
-
-            char *tmp = realloc(results, newcap);
-            if (!tmp) {
-                free(results);
-                return 0;
-            }
-
-            results = tmp;
-            capacity = newcap;
+        if (n < 0) {
+            fclose(temp);
+            return 0;
         }
 
-        memcpy(results + used, result, (size_t)n);
-        used += (size_t)n;
-        results[used] = '\0';
         total += len;
     }
 
     if (ferror(in)) {
-        free(results);
+        fclose(temp);
         return 0;
     }
 
-    if (has_error)
-        fprintf(out, "ERROR:%zu\n", first_error);
-    else if (used)
-        fwrite(results, 1, used, out);
+    if (has_error) {
+        if (fprintf(out, "ERROR:%zu\n", first_error) < 0) {
+            fclose(temp);
+            return 0;
+        }
+    } else {
+        if (fflush(temp) != 0 || fseek(temp, 0, SEEK_SET) != 0) {
+            fclose(temp);
+            return 0;
+        }
 
-    free(results);
+        int ch;
+
+        while ((ch = fgetc(temp)) != EOF) {
+            if (fputc(ch, out) == EOF) {
+                fclose(temp);
+                return 0;
+            }
+        }
+
+        if (ferror(temp)) {
+            fclose(temp);
+            return 0;
+        }
+    }
+
+    fclose(temp);
     return !ferror(out);
 }
 
@@ -369,6 +393,7 @@ static const char *basename_of(const char *path)
 static void remove_extension(char *s)
 {
     char *p = strrchr(s, '.');
+
     if (p)
         *p = '\0';
 }
@@ -400,12 +425,14 @@ static int process_file(const char *path, const char *outdir)
         return 0;
 
     FILE *in = fopen(path, "r");
+
     if (!in) {
         perror(path);
         return 0;
     }
 
     FILE *out = fopen(output, "w");
+
     if (!out) {
         perror(output);
         fclose(in);
@@ -416,6 +443,7 @@ static int process_file(const char *path, const char *outdir)
 
     if (fclose(in) != 0)
         ok = 0;
+
     if (fclose(out) != 0)
         ok = 0;
 
@@ -425,6 +453,7 @@ static int process_file(const char *path, const char *outdir)
 static int process_directory(const char *path, const char *outdir)
 {
     DIR *dir = opendir(path);
+
     if (!dir) {
         perror(path);
         return 0;
@@ -450,6 +479,7 @@ static int process_directory(const char *path, const char *outdir)
         }
 
         struct stat st;
+
         if (stat(file, &st) != 0 || !S_ISREG(st.st_mode))
             continue;
 
@@ -470,7 +500,9 @@ static void usage(const char *program)
 
 int main(int argc, char **argv)
 {
-    const char *file = NULL, *dir = NULL, *outdir = NULL;
+    const char *file = NULL;
+    const char *dir = NULL;
+    const char *outdir = NULL;
     char default_dir[PATH_CAP];
 
     for (int i = 1; i < argc; i++) {
@@ -480,6 +512,7 @@ int main(int argc, char **argv)
                 usage(argv[0]);
                 return 2;
             }
+
             dir = argv[i];
         } else if (!strcmp(argv[i], "-o") ||
                    !strcmp(argv[i], "--output-dir")) {
@@ -487,6 +520,7 @@ int main(int argc, char **argv)
                 usage(argv[0]);
                 return 2;
             }
+
             outdir = argv[i];
         } else if (argv[i][0] == '-') {
             usage(argv[0]);
